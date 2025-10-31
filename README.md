@@ -1,123 +1,55 @@
-#Poject Assignement 1
+#Parallel computing
+##Project 1
 
-## Objective
-Solve the All-Pairs Shortest Path problem using MPI and Fox's Algorithm.
+Diogo Rocha 202501406
+Francesco Arboresi 202509510
 
-## Implementation
+-Summary of the algorithm: detail on the idea, data structure, auxiliary functions, what communication
 
-### Phase 1 - Environment Setup
-We start by setting up a base structure for our D1 Matrices like so:
-```c
-typedef struct
-{
-int size;
-int* data;
-} Matrix;
-```
-And setting up some read, write and saving functions:
-```c
-Matrix read_file(char *filename) {
+-Performance evaluation: times in milliseconds, comparison with sequential execution (at least 1, 4, 9,16,25 processes)
 
-	Matrix matrix;
-	FILE *file = fopen(filename, "r");
+-difficulties found during the work, and suggestions
 
-	if (file == NULL) {
+#Data structure
+Firstly, the matrix structure has been defined, that is simply a re-defined unsigned long pointer and conversely it’s MPI counter part is defined as an MPI_UNSIGNED_LONG, this approach avoids having to create a new MPI_DATATYPE.
+A grid type structure is defined by a series of global variables ( int grid_size; MPI_Comm comm; int coords[2]; MPI_Comm col_comm; MPI_Comm row_comm; ) to setup a grid_sizexgride_size Cartesian Grid 
+Auxiliary functions
+A series of functions are declared outside the main: 
+    • proc_init - Function to read the input file, allocate memory for the blocks and matrices and init the data;
+    • data_init - Function to initialize the matrix with the data inside the input file
+    • proc_end - Free all allocated memory;
+    • setup_grid - Function for creating the two-dimensional grid communicator and communicators for each row and each column of the grid;
+    • print_matrix - Self-explanatory function to print the matrix;
+    • distribute_data - Distribution of data among the processes;
+    • matrix_scatter - Function for checkerboard matrix decomposition;
+    • fox_algorithmn - Function for parallel execution of the Fox method;
+    • gather_results - Join final results in Matrix C;
+    • adjust_values - Set INT_MAX values back to 0 in the result matrix;
+    • check_results - Function to compare the result matrix with an expected output file;
+    • save_matrix - Save a Matrix to an output file;
+The Fox function defines the Fox algorithm which calculates our sum-min operations with the parallel approach.
+The arguments of this function are 3 local matrixes A, B, C. Where local_A and local_B start as the submatrix assigned to the specific processor elected by the grid system, and the local_C matrix is the outcome of the min-plus operation between local_A and local_B.
+It operates on submatrices (blocks) of the larger matrices A, B, and C, which are distributed among processes arranged in a grid. Each process is identified by its grid coordinates and participates in row and column communicators. The algorithm proceeds in several iterations, one for each step in the grid. In every iteration, each process row determines a “pivot” process whose A-block will be broadcast to all processes in that row. If a process is the pivot, it copies its local portion of A into a temporary buffer, which is then broadcast using MPI_Bcast. After the broadcast, all processes in that row possess the correct A-block for that iteration. Each process then performs local computation on its received A-block and local B-block.
+After computing partial results and updating its local C-block, each process shifts its B-block upward within its column using MPI_Sendrecv_replace, ensuring that every process receives a new B-block for the next iteration. This combination of broadcasting A-blocks along rows, shifting B-blocks along columns, and performing local computation ensures that all necessary submatrix pairs interact over the course of the algorithm, ultimately producing the correct distributed result in C.
 
-		printf("Error: Could not open file %s\n", filename);
-		Matrix empty_matrix = {0, NULL};
-		return empty_matrix;
-	}
+#Main and communicators
+The program begins with the initialization of the MPI environment using MPI_Init, followed by MPI_Comm_size and MPI_Comm_rank to obtain the total number of processes (num_procs) and each process’s unique rank (my_rank). The processes then collectively validate that the number of processes forms a perfect square — a requirement for constructing the two-dimensional process grid used in Fox’s algorithm. If an error is detected, the program calls MPI_Finalize (or MPI_Abort for hard failure), signaling all processes to terminate synchronously.
+Before proceeding, the code calls MPI_Barrier(MPI_COMM_WORLD) twice — once after reading command-line arguments and once after grid and matrix initialization. This ensures that all processes have successfully set up their local data structures and communicators before the computation starts.
+During computation, the main communication work occurs inside the do–while loop. The function distribute_data() is responsible for scattering portions of the global matrices A, B, and C to the local process blocks. This uses MPI_Scatter in the sub function matrix_scatter() to distribute submatrices from the root process (rank 0) to all others in a checkerboard pattern. Similarly, gather_results() is expected to collect the computed local results from all processes back to the root, using MPI_Gather.
+Inside each iteration, the fox_algorithmn() function performs other communications: it uses row-wise broadcasts (MPI_Bcast) and column-wise cyclic shifts (MPI_Sendrecv_replace) within(row_comm and col_comm. These are not global operations; instead, they happen within subgroups of processes.The broadcast operation shares one process’s block of A with all others in the same row communicator, while the send-receive call simultaneously exchanges B-blocks up and down the column communicator.
+After each iteration, the main loop includes the broadcast:
+MPI_Bcast(&iteration, 1, MPI_INT, 0, MPI_COMM_WORLD);
+Here, the root process (rank 0) sends the updated variable iteration to all processes. This is a global broadcast, ensuring that every process has the same control..
+Before finalizing we add a bit of Quality of Life to the program by printing the final output and how much time it took to complete, doing an optional check with an already pre-made file with the solution to check if it achieved the desired result and finally saving our output to a file happily named ‘output’.
+Finally, after all computation steps, MPI_Finalize() is called to cleanly terminate the MPI environment.
 
-	fscanf(file, "%d", &matrix.size);
-	matrix.data = (int*)malloc(matrix.size * matrix.size * sizeof(int));
 
-	for (int i = 0; i < matrix.size * matrix.size; i++) {
-		fscanf(file, "%d", &matrix.data[i]);
-	} 
+Main difficulties encountered
+    • Coding in C.
+    • Proper examples with fox’s algorithm. A User’s guide to MPI abstracts the handling of matrices and only focus on the parelisation part. Other examples found are non working.
+    • Proper debugging, when testing we found larger matrices start producing wrong results at around index 11 to 13, we weren’t able to discover why in time.
 
-	fclose(file);
-	return matrix;
-}
-```
-```c
-void print_matrix(Matrix matrix) {
-	printf("%d\n", matrix.size);
-	for (int i = 0; i < matrix.size; i++) {
-		for (int j = 0; j < matrix.size; j++) {
-			printf("%d ", matrix.data[i * matrix.size + j]);
-		}
-	printf("\n");
-	}
-}
-```
-```c
-void save_matrix(char *filename, Matrix matrix) {
-	FILE *file = fopen(filename, "w");
-
-	fprintf(file, "%d\n", matrix.size);
-	for (int i = 0; i < matrix.size; i++) {
-		for (int j = 0; j < matrix.size; j++) {
-			fprintf(file, "%d ", matrix.data[i * matrix.size + j]);
-		}
-	fprintf(file, "\n");
-	}
-}
-```
-And then setup a basic makefile for debugging:
-```makefile
-a.out: main.c
-
-mpicc main.c && mpirun -np 4 --oversubscribe a.out input6
-```
-For the main function we setup the basic MPI boiler plate and test our functions in Rank 0 to avoid duplication.
-```c
-int main(int argc, char **argv) {
-
-	int my_rank;
-	int num_procs;
-
-	Matrix matrix;«
-  
-	MPI_Init(&argc, &argv);
-	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
-	MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
-
-	if (my_rank == 0)
-	{
-		matrix = read_file(argv[1]);
-		if (matrix.size == 0) {
-			return -1;
-		}
-		
-		print_matrix(matrix);
-		char output_filename[20];
-		sprintf(output_filename, "output%d", matrix.size);
-		save_matrix(output_filename, matrix);
-	}
-	MPI_Finalize();
-	return 0;
-}
-```
-After compiling and running we get the output both in the terminal and in a new file called "output6":
-```
-6
-0 2 0 5 0 0 
-0 0 0 0 0 0 
-0 2 0 0 0 5 
-0 0 0 0 1 0 
-3 9 3 0 0 0 
-0 0 0 0 1 0 
-```
-
-### Phase 2 Process Distribution
-First we put some safeguards, like checking if we have an integer Q:
-```c
-grid_size = (int)sqrt(num_procs);
-if (my_rank == 0)
-{
-	if (num_procs != grid_size * grid_size || matrix.size % grid_size != 0) {
-		printf("Error: Number of processes must be a perfect square and matrix size must be divisible by sqrt(number of processes).\n");
-		MPI_Abort(MPI_COMM_WORLD, -1);
-}
-```
-We star getting some compiler errors here: like using MPI_Abort causing the program to prematurely kill itself just by existing ? Not even being called, and the math.h (that contains sqrt()) library requiring to add -lm in the end of the compilation process.
+Bibliography/ Resources
+    • Pacheco, P. S. (n.d.). A User's Guide to MPI. DCC. https://www3.dcc.fc.up.pt/~miguel-areias/teaching/2526/cp/material/mpi_guide.pdf
+    • Yosbi. (n.d.). All Pairs Shortest Path Implementation. Github. https://github.com/Yosbi/All-Pair-Shortest-Path
+    • Salgado, C. (n.d.). MPI All Pairs Shortest Path Implementation. Github. https://github.com/CaioCSdev/mpi_all_pairs-_shortest_paths-
